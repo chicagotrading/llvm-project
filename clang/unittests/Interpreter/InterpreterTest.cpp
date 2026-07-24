@@ -574,3 +574,63 @@ TEST_F(InterpreterTest, TranslationUnit_CanonicalDecl) {
 }
 
 } // end anonymous namespace
+
+// The host's copy of a header-defined singleton, standing in for a library
+// the executor process has loaded (this test binary exports its symbols).
+// The interpreter compiles identical definitions in the test below; both
+// sides must observe a single instance.
+struct ProcessSingleton {
+  static ProcessSingleton &get() {
+    static ProcessSingleton Instance;
+    return Instance;
+  }
+  static inline int InlineMember = 0;
+  int Value = 0;
+};
+
+REPL_EXTERNAL_VISIBILITY void *hostSingletonAddr() {
+  return &ProcessSingleton::get();
+}
+REPL_EXTERNAL_VISIBILITY void *hostInlineMemberAddr() {
+  return &ProcessSingleton::InlineMember;
+}
+
+namespace {
+
+// Weak globals the process already defines -- a function-local static in an
+// inline function and a C++17 inline static data member -- must be bound by
+// interpreter code, not re-materialized in the JIT: a dynamic linker would
+// have unified the two copies, and diverging copies mean two instances of
+// one singleton and a double destruction.
+TEST_F(InterpreterTest, ProcessWeakGlobalsAreBound) {
+#ifndef __ELF__
+  GTEST_SKIP() << "binding process weak globals is ELF-only";
+#endif
+
+  std::unique_ptr<Interpreter> Interp = createInterpreter();
+  llvm::cantFail(Interp->ParseAndExecute(R"(
+    struct ProcessSingleton {
+      static ProcessSingleton &get() {
+        static ProcessSingleton Instance;
+        return Instance;
+      }
+      static inline int InlineMember = 0;
+      int Value = 0;
+    };
+    extern "C" void *jitSingletonAddr() { return &ProcessSingleton::get(); }
+    extern "C" void *jitInlineMemberAddr() {
+      return &ProcessSingleton::InlineMember;
+    }
+  )"));
+
+  auto JitSingletonAddr = cantFail(Interp->getSymbolAddress("jitSingletonAddr"))
+                              .toPtr<void *(*)()>();
+  auto JitInlineMemberAddr =
+      cantFail(Interp->getSymbolAddress("jitInlineMemberAddr"))
+          .toPtr<void *(*)()>();
+
+  EXPECT_EQ(JitSingletonAddr(), hostSingletonAddr());
+  EXPECT_EQ(JitInlineMemberAddr(), hostInlineMemberAddr());
+}
+
+} // end anonymous namespace

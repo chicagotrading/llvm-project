@@ -26,9 +26,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace llvm {
 class Error;
+class Module;
 namespace orc {
 class JITTargetMachineBuilder;
 class LLJIT;
@@ -47,6 +49,12 @@ class OrcIncrementalExecutor : public IncrementalExecutor {
 
   llvm::DenseMap<const PartialTranslationUnit *, llvm::orc::ResourceTrackerSP>
       ResourceTrackers;
+
+  /// The executor process's global dylib handle, for binding weak globals
+  /// the process already defines. Loaded lazily on first use.
+  std::optional<llvm::orc::ExecutorAddr> ProcessDylibHandle;
+
+  llvm::Error bindProcessWeakGlobals(llvm::Module &M);
 
 protected:
   OrcIncrementalExecutor(llvm::orc::ThreadSafeContext &TSC);
